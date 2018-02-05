@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import socket
 import json
 from adapt.intent import IntentBuilder
