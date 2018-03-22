@@ -41,6 +41,7 @@ def print_intent(command):
 
 # next create a socket object
 s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 port = 5555
 # Next bind to the port
 s.bind(('127.0.0.1', port))
