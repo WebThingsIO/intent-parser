@@ -66,7 +66,7 @@ while True:
             print('Got connection from', addr)
 
         # c.settimeout(5.0)
-        data = c.recv(4096)
+        data = c.recv(4096 * 4)
         # c.settimeout(None)
 
         cmd = data.decode('utf-8').strip()
