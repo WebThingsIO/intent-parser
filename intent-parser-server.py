@@ -28,11 +28,17 @@ For a "train" command, the "data" property is an object of the form:
 }
 
 For a "query" command, the "data" property is just the string query.
+
+Previously, commands were of the form:
+    t:keywords|types|locations
+    q:query
+
+For the sake of backwards compatibility, we continue to support that for now.
 """
 
 from adapt.engine import IntentDeterminationEngine
 from adapt.intent import IntentBuilder
-from socketserver import StreamRequestHandler, ThreadingTCPServer
+from socketserver import BaseRequestHandler, ThreadingTCPServer
 import json
 import struct
 import threading
@@ -52,8 +58,37 @@ class TCPServer(ThreadingTCPServer):
         self.engine_lock = threading.Lock()
 
 
-class Handler(StreamRequestHandler):
+class Handler(BaseRequestHandler):
     """Request handler class."""
+
+    def parse_legacy_message(self, message):
+        """
+        Parse a legacy message.
+
+        message -- message to parse
+        """
+        message = message.decode()
+
+        if message[0] == 't':
+            parts = message[2:].split('|')
+            if len(parts) < 3:
+                return None
+
+            return {
+                'command': 'train',
+                'data': {
+                    'keywords': parts[0].split(','),
+                    'types': parts[1].split(','),
+                    'locations': parts[2].split(','),
+                },
+            }
+        elif message[0] == 'q':
+            return {
+                'command': 'query',
+                'data': message[2:],
+            }
+        else:
+            return None
 
     def send_error(self, error):
         """
@@ -61,7 +96,7 @@ class Handler(StreamRequestHandler):
 
         error -- message to send
         """
-        self.wfile.write(json.dumps({
+        self.request.sendall(json.dumps({
             'status': 'error',
             'error': error,
         }).encode('utf-8'))
@@ -79,17 +114,21 @@ class Handler(StreamRequestHandler):
         if data is not None:
             message['data'] = data
 
-        self.wfile.write(json.dumps(message).encode('utf-8'))
+        self.request.sendall(json.dumps(message).encode('utf-8'))
 
-    def read_bytes(self, count):
+    def read_bytes(self, count=None):
         """
         Read bytes from the stream.
 
-        count -- number of bytes to read
+        count -- optional number of bytes to read
         """
+        if count is None:
+            # Read everything we can
+            return self.request.recv(4096 * 4)
+
         data = b''
         while len(data) < count:
-            data += self.rfile.read(count - len(data))
+            data += self.request.recv(count - len(data))
 
         return data
 
@@ -103,8 +142,6 @@ class Handler(StreamRequestHandler):
         """
         with self.server.engine_lock:
             self.server.engine = IntentDeterminationEngine()
-
-            print(keywords, types, locations)
 
             for kw in keywords:
                 self.server.engine.register_entity(kw, 'Keyword')
@@ -146,17 +183,27 @@ class Handler(StreamRequestHandler):
 
     def handle(self):
         """Handle an incoming request."""
-        length = struct.unpack('>I', self.read_bytes(4))[0]
-        message = self.read_bytes(length)
+        legacy_mode = False
 
-        try:
-            message = json.loads(message.decode())
-        except ValueError:
-            self.send_error('Failed to decode message.')
-            return
+        initial = self.read_bytes(count=2)
+        if initial.decode() in ['t:', 'q:']:
+            legacy_mode = True
+            message = self.parse_legacy_message(initial + self.read_bytes())
+            if message is None:
+                return
+        else:
+            length = struct.unpack('>I', initial + self.read_bytes(count=2))[0]
+            message = self.read_bytes(count=length)
+            try:
+                message = json.loads(message.decode())
+            except ValueError:
+                self.send_error('Failed to decode message.')
+                return
 
         if 'command' not in message or 'data' not in message:
-            self.send_error('Invalid message.')
+            if not legacy_mode:
+                self.send_error('Invalid message.')
+
             return
 
         data = message['data']
@@ -168,21 +215,33 @@ class Handler(StreamRequestHandler):
             if 'keywords' not in data or \
                     'types' not in data or \
                     'locations' not in data:
-                self.send_error('Input data is invalid.')
+                if not legacy_mode:
+                    self.send_error('Input data is invalid.')
+
                 return
 
             self.train(data['keywords'], data['types'], data['locations'])
-            self.send_success()
+
+            if legacy_mode:
+                self.request.sendall('1'.encode('utf-8'))
+            else:
+                self.send_success()
         elif message['command'] == 'query':
             if _DEBUG:
                 print('Query:', data)
 
             result, error = self.query(data)
             if error:
-                self.send_error(error)
+                if legacy_mode:
+                    self.request.sendall('-1'.encode('utf-8'))
+                else:
+                    self.send_error(error)
             else:
-                self.send_success(result)
-        else:
+                if legacy_mode:
+                    self.request.sendall(json.dumps(result).encode('utf-8'))
+                else:
+                    self.send_success(data=result)
+        elif not legacy_mode:
             self.send_error('Invalid command.')
 
 
