@@ -246,5 +246,5 @@ class Handler(BaseRequestHandler):
 
 
 if __name__ == '__main__':
-    with TCPServer(('127.0.0.1', 5555), Handler) as server:
-        server.serve_forever()
+    server = TCPServer(('127.0.0.1', 5555), Handler)
+    server.serve_forever()
